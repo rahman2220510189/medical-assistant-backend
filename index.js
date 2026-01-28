@@ -3,10 +3,13 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+CONST = require('constants');
+
 const morgan = require('morgan');
 
 const app = express();
-const PORT = process.env.PORT || 3000;  
+const PORT = process.env.PORT || 5000;  
 
 //  FastAPI Ngrok URL ( Google Colab API)
 const MEDICAL_API_URL = 'https://predeterminate-falsely-annabel.ngrok-free.dev/';
@@ -28,8 +31,6 @@ const client = new MongoClient(uri, {
   }
 });
 
-async function run() {
-  try {
 // Axios instance for FastAPI communication
 const apiClient = axios.create({
     baseURL: MEDICAL_API_URL,
@@ -39,6 +40,22 @@ const apiClient = axios.create({
     },
     timeout: 30000 // 30 seconds timeout
 });
+const userCollection = client.db("medical_system").collection("user");
+
+
+const verifyToken = (req, res, next) => {
+    if (!req.headers.authorization) {
+        return res.status(401).send({ message: 'Unauthorized access' });
+    }
+    const token = req.headers.authorization.split(' ')[1];
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(403).send({ message: 'Forbidden access' });
+        }
+        req.decoded = decoded;
+        next();
+    });
+};
 
 
 app.get('/', (req, res) => {
@@ -58,7 +75,59 @@ app.get('/', (req, res) => {
     });
 });
 
+// JWT related api
+app.post('/jwt', async (req, res) => {
+    try {
+        const user = req.body;
+        console.log('Generating JWT for:', user.email);
+        const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
+        res.send({ token });
+    } catch (error) {
+        console.error('JWT generation error:', error);
+        res.status(500).send({ message: 'Error generating token', error: error.message });
+    }
+});
 
+// User registration api
+app.post('/api/users', async (req, res) => {
+    try {
+        if (!userCollection) {
+            return res.status(503).send({ 
+                message: 'Database not connected yet. Please try again in a moment.',
+                insertId: null 
+            });
+        }
+
+        const user = req.body;
+        console.log('Registering user:', user.email);
+        
+        const query = { email: user.email };
+        const existingUser = await userCollection.findOne(query);
+        
+        if (existingUser) {
+            return res.status(400).send({ 
+                message: 'User already exists', 
+                insertId: null 
+            });
+        }
+
+        const newUser = { ...user, role: 'user', createdAt: new Date() };
+        const result = await userCollection.insertOne(newUser);
+        
+        console.log('User registered successfully:', result.insertedId);
+        res.send({ 
+            message: 'User registered successfully', 
+            insertId: result.insertedId 
+        });
+    } catch (error) {
+        console.error('User registration error:', error);
+        res.status(500).send({ 
+            message: 'Error registering user', 
+            error: error.message,
+            insertId: null 
+        });
+    }
+});
 app.get('/api/health', async (req, res) => {
     try {
         console.log('Checking FastAPI health...');
@@ -300,13 +369,23 @@ app.use((req, res) => {
         ]
     });
 });
- await client.connect();
+
+// MongoDB connection
+async function run() {
+  try {
+    await client.connect();
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+
+    // Collections
+
+   
+ 
+  
+
+  } catch(error) {
+    console.error('MongoDB connection error:', error);
   }
 }
 run().catch(console.dir);
