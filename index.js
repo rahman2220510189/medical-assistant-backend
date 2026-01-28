@@ -8,7 +8,7 @@ const morgan = require('morgan');
 const app = express();
 const PORT = process.env.PORT || 3000;  
 
-//  FastAPI Ngrok URL (Your Google Colab API)
+//  FastAPI Ngrok URL ( Google Colab API)
 const MEDICAL_API_URL = 'https://predeterminate-falsely-annabel.ngrok-free.dev/';
 // Middleware
 app.use(express.json());
@@ -141,7 +141,7 @@ app.post('/api/predict-list', async (req, res) => {
             symptoms: symptomsList  
         });
 
-        console.log('✅ Prediction successful:', response.data.disease);
+        console.log('Prediction successful:', response.data.disease);
 
         res.json({
             success: true,
