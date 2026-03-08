@@ -110,16 +110,17 @@ const verifyAdmin = async (req, res, next) => {
 
 // AUTH ROUTES
 
-
-app.post('/jwt', async (req, res) => {
-  try {
-    const user = req.body;
-    const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '7d' });
-    res.send({ token });
-  } catch (error) {
-    res.status(500).send({ message: 'Error generating token', error: error.message });
-  }
+app.post('/jwt', (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+        return res.status(400).json({ message: 'Email required' });
+    }
+    const token = jwt.sign({ email }, process.env.ACCESS_TOKEN_SECRET, {
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d'
+    });
+    res.json({ token });
 });
+
 
 app.post('/api/users', async (req, res) => {
   try {
@@ -169,33 +170,39 @@ app.post('/api/upload/doctor-photo', verifyToken, upload.single('photo'), async 
 // doctor / search / filter
 app.get('/api/doctors', async (req, res) => {
   try {
-    const { specialist, search, page = 1, limit = 10 } = req.query;
-    let query = {};
+    const { search, specialist, limit = 20, page = 1 } = req.query;
 
-    if (specialist) query.specialist = specialist;
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { specialist: { $regex: search, $options: 'i' } }
-      ];
+    const query = {};
+
+    // Search by name (case-insensitive, strip Dr. prefix)
+    if (search && search.trim().length >= 2) {
+      const cleanSearch = search.trim().replace(/^Dr\.?\s*/i, '').trim();
+      const searchTerm = cleanSearch || search.trim();
+      query.name = { $regex: searchTerm, $options: 'i' };
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
-    const total = await doctorCollection.countDocuments(query);
-    const doctors = await doctorCollection
-      .find(query)
-      .project({ availability: 0 })
-      .skip(skip)
-      .limit(Number(limit))
-      .sort({ rating: -1 })
-      .toArray();
+    // Filter by specialist
+    if (specialist && specialist !== 'All') {
+      query.specialist = { $regex: specialist.trim(), $options: 'i' };
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [doctors, total] = await Promise.all([
+      doctorCollection
+        .find(query)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .toArray(),
+      doctorCollection.countDocuments(query),
+    ]);
 
     res.json({
       success: true,
+      doctors,
       total,
-      page: Number(page),
-      totalPages: Math.ceil(total / Number(limit)),
-      doctors
+      totalPages: Math.ceil(total / parseInt(limit)),
+      currentPage: parseInt(page),
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -240,9 +247,16 @@ app.get('/api/doctors/:id/availability', async (req, res) => {
 // Doctor add (admin)
 app.post('/api/doctors', verifyToken, upload.single('photo'), async (req, res) => {
   try {
+    console.log('req.body:', req.body);
+    console.log('req.file:', req.file);
+    
+    const photoUrl = req.file 
+      ? (req.file.path || req.file.secure_url || `http://localhost:5000/uploads/${req.file.filename}`)
+      : null;
+
     const doctorData = {
       ...req.body,
-      photo: req.file ? req.file.path : 'https://i.ibb.co/default-doctor.png',
+      photo: photoUrl,
       qualifications: req.body.qualifications ? JSON.parse(req.body.qualifications) : [],
       availability: req.body.availability ? JSON.parse(req.body.availability) : [],
       experience: Number(req.body.experience) || 0,
@@ -250,16 +264,19 @@ app.post('/api/doctors', verifyToken, upload.single('photo'), async (req, res) =
       rating: Number(req.body.rating) || 4.5,
     };
 
+    console.log('doctorData:', doctorData);
+
     const doctor = createDoctor(doctorData);
     const result = await doctorCollection.insertOne(doctor);
 
     res.status(201).json({
       success: true,
-      message: ' Doctor added successfully!',
+      message: 'Doctor added successfully!',
       insertedId: result.insertedId,
       doctor: { ...doctor, _id: result.insertedId }
     });
   } catch (error) {
+    console.error('Doctor insert error:', error); // ← এটা terminal এ দেখো
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -368,7 +385,6 @@ app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
       doctorCollection.countDocuments({ isOnline: true }),
     ]);
 
-  
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
@@ -376,7 +392,7 @@ app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
       bookedAt: { $gte: startOfMonth }
     });
 
-    // Revenue (completed appointments)
+    // Revenue
     const revenueData = await appointmentCollection.aggregate([
       { $match: { status: 'Completed' } },
       {
@@ -405,12 +421,51 @@ app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
       .limit(5)
       .toArray();
 
-    // Top 5 doctors by appointments
-    const topDoctors = await appointmentCollection.aggregate([
+    // ── Top 5 doctors WITH name ──
+    const topDoctorsRaw = await appointmentCollection.aggregate([
       { $group: { _id: '$doctorId', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 5 },
     ]).toArray();
+
+    // Fetch doctor names
+    const topDoctors = await Promise.all(
+      topDoctorsRaw.map(async (d) => {
+        try {
+          const doctor = await doctorCollection.findOne(
+            { _id: new ObjectId(d._id) },
+            { projection: { name: 1, specialist: 1, photo: 1 } }
+          );
+          return {
+            _id: d._id,
+            count: d.count,
+            name: doctor?.name || 'Unknown',
+            specialist: doctor?.specialist || '—',
+            photo: doctor?.photo || null,
+          };
+        } catch {
+          return { _id: d._id, count: d.count, name: 'Unknown', specialist: '—', photo: null };
+        }
+      })
+    );
+
+    // ── Monthly appointments (last 6 months) ──
+    const monthlyData = [];
+    for (let i = 5; i >= 0; i--) {
+      const date = new Date();
+      date.setMonth(date.getMonth() - i);
+      const start = new Date(date.getFullYear(), date.getMonth(), 1);
+      const end   = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59);
+
+      const count = await appointmentCollection.countDocuments({
+        bookedAt: { $gte: start, $lte: end }
+      });
+
+      monthlyData.push({
+        month: start.toLocaleString('en-US', { month: 'short' }),
+        appointments: count,
+      });
+    }
 
     res.json({
       success: true,
@@ -430,6 +485,7 @@ app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
       },
       recentAppointments,
       topDoctors,
+      monthlyData,  
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
