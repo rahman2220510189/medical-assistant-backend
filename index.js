@@ -1137,6 +1137,23 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => console.log(`❌ Disconnected: ${socket.id}`));
 });
+// Contact form
+app.post("/api/contact", async (req, res) => {
+  try {
+    const { name, email, subject, message } = req.body;
+    if (!name || !email || !message) {
+      return res.status(400).json({ message: "Required fields missing" });
+    }
+    const db = client.db("medical_system");
+    await db.collection("contacts").insertOne({
+      name, email, subject, message,
+      createdAt: new Date()
+    });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
 
 // ERROR HANDLERS
 
