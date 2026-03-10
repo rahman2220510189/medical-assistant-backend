@@ -1131,8 +1131,8 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('call-ended');
     socket.leave(roomId);
   });
-  socket.on('chat-message', ({ roomId, message, sender, time }) => {
-  io.to(roomId).emit('chat-message', { message, sender, time });
+ socket.on('chat-message', ({ roomId, message, sender, time, image }) => {
+  socket.to(roomId).emit('chat-message', { message, sender, time, image });
 });
 
   socket.on('disconnect', () => console.log(`❌ Disconnected: ${socket.id}`));
