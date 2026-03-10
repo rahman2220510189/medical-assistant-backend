@@ -468,7 +468,7 @@ app.patch('/api/appointments/:id/prescription', verifyToken, async (req, res) =>
   }
 });
 
-// ✅UPDATED: Doctor update — password update support
+// UPDATED: Doctor update — password update support
 app.put('/api/doctors/:id', verifyToken, upload.single('photo'), async (req, res) => {
   try {
     const updateData = { ...req.body };
@@ -476,7 +476,7 @@ app.put('/api/doctors/:id', verifyToken, upload.single('photo'), async (req, res
     if (updateData.qualifications) updateData.qualifications = JSON.parse(updateData.qualifications);
     if (updateData.availability)   updateData.availability   = JSON.parse(updateData.availability);
 
-    // ✅ Password update
+    //  Password update
     if (updateData.password && updateData.password.length >= 6) {
       updateData.password = await bcrypt.hash(updateData.password, 10);
     } else {
@@ -876,6 +876,18 @@ app.get('/api/appointments/my', verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+// Single appointment GET
+app.get('/api/appointments/:id', verifyToken, async (req, res) => {
+  try {
+    const apt = await appointmentCollection.findOne({ 
+      _id: new ObjectId(req.params.id) 
+    });
+    if (!apt) return res.status(404).json({ success: false, message: 'Not found' });
+    res.json({ success: true, appointment: apt });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // Appointment cancel
 app.patch('/api/appointments/:id/cancel', verifyToken, async (req, res) => {
@@ -1095,9 +1107,9 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('user-joined', { userId, userType });
   });
 
-  socket.on('offer',         ({ roomId, offer })     => socket.to(roomId).emit('offer', offer));
-  socket.on('answer',        ({ roomId, answer })    => socket.to(roomId).emit('answer', answer));
-  socket.on('ice-candidate', ({ roomId, candidate }) => socket.to(roomId).emit('ice-candidate', candidate));
+  socket.on('offer',         ({ roomId, offer })     => socket.to(roomId).emit('offer', { offer }));
+  socket.on('answer',        ({ roomId, answer })    => socket.to(roomId).emit('answer', { answer }));
+  socket.on('ice-candidate', ({ roomId, candidate }) => socket.to(roomId).emit('ice-candidate', { candidate }));
 
   socket.on('doctor-busy', async ({ doctorId, roomId }) => {
     await doctorCollection?.updateOne(
@@ -1119,6 +1131,9 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('call-ended');
     socket.leave(roomId);
   });
+  socket.on('chat-message', ({ roomId, message, sender, time }) => {
+  io.to(roomId).emit('chat-message', { message, sender, time });
+});
 
   socket.on('disconnect', () => console.log(`❌ Disconnected: ${socket.id}`));
 });
