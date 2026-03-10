@@ -6,8 +6,10 @@ const morgan = require('morgan');
 const http = require('http');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
+
 
 const { createDoctor } = require('./doctor.model');
 const { createAppointment } = require('./appointment.model');
@@ -19,6 +21,7 @@ const { generatePrescription } = require('./prescription');
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // ─── FastAPI URL ───
 const MEDICAL_API_URL = process.env.MEDICAL_API_URL || 'https://your-ngrok-url.ngrok-free.app';
@@ -108,6 +111,21 @@ const verifyAdmin = async (req, res, next) => {
   }
 };
 
+//   verifyDoctor middleware
+const verifyDoctor = async (req, res, next) => {
+  try {
+    const email = req.decoded.email;
+    const doctor = await doctorCollection.findOne({ email });
+    if (!doctor) {
+      return res.status(403).json({ success: false, message: 'Doctor access required' });
+    }
+    req.doctor = doctor;
+    next();
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // AUTH ROUTES
 
 app.post('/jwt', (req, res) => {
@@ -146,6 +164,119 @@ app.get('/api/users/me', verifyToken, async (req, res) => {
   }
 });
 
+//  DOCTOR AUTH ROUTES
+app.post('/api/doctor/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Email and password required' });
+    }
+    const doctor = await doctorCollection.findOne({ email });
+    if (!doctor) {
+      return res.status(404).json({ success: false, message: 'Doctor not found' });
+    }
+    if (!doctor.password) {
+      return res.status(400).json({ success: false, message: 'Password not set. Contact admin.' });
+    }
+    const isMatch = await bcrypt.compare(password, doctor.password);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: 'Invalid password' });
+    }
+    const token = jwt.sign(
+      { email: doctor.email, role: 'doctor', doctorId: doctor._id },
+      process.env.ACCESS_TOKEN_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+    res.json({
+      success: true,
+      token,
+      doctor: {
+        _id: doctor._id,
+        name: doctor.name,
+        email: doctor.email,
+        specialist: doctor.specialist,
+        photo: doctor.photo,
+        isOnline: doctor.isOnline,
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get('/api/doctor/me', verifyToken, verifyDoctor, async (req, res) => {
+  try {
+    const doctor = await doctorCollection.findOne(
+      { email: req.decoded.email },
+      { projection: { password: 0 } }
+    );
+    res.json({ success: true, doctor });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.patch('/api/doctor/status', verifyToken, verifyDoctor, async (req, res) => {
+  try {
+    const { isOnline } = req.body;
+    await doctorCollection.updateOne(
+      { email: req.decoded.email },
+      { $set: { isOnline, updatedAt: new Date() } }
+    );
+    res.json({ success: true, message: `Status updated to ${isOnline ? 'Online' : 'Offline'}` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get('/api/doctor/appointments', verifyToken, verifyDoctor, async (req, res) => {
+  try {
+    const { status, date } = req.query;
+    const doctor = req.doctor;
+    const query = { doctorId: doctor._id.toString() };
+    if (status) query.status = status;
+    if (date) {
+      const start = new Date(date); start.setHours(0,0,0,0);
+      const end   = new Date(date); end.setHours(23,59,59,999);
+      query.appointmentDate = { $gte: start, $lte: end };
+    }
+    const appointments = await appointmentCollection
+      .find(query)
+      .sort({ appointmentDate: 1, appointmentTime: 1 })
+      .toArray();
+    res.json({ success: true, appointments });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get('/api/doctor/stats', verifyToken, verifyDoctor, async (req, res) => {
+  try {
+    const doctor = req.doctor;
+    const doctorId = doctor._id.toString();
+    const today = new Date(); today.setHours(0,0,0,0);
+    const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+    const [total, todayCount, completed, pending, paidCount] = await Promise.all([
+      appointmentCollection.countDocuments({ doctorId }),
+      appointmentCollection.countDocuments({ doctorId, appointmentDate: { $gte: today, $lte: todayEnd } }),
+      appointmentCollection.countDocuments({ doctorId, status: 'Completed' }),
+      appointmentCollection.countDocuments({ doctorId, status: { $in: ['Pending','Confirmed'] } }),
+      appointmentCollection.countDocuments({ doctorId, paymentStatus: 'paid' }),
+    ]);
+    res.json({
+      success: true,
+      stats: {
+        totalAppointments: total,
+        todayAppointments: todayCount,
+        completedAppointments: completed,
+        pendingAppointments: pending,
+        totalEarnings: paidCount * (Number(doctor.consultationFee) || 0),
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // DOCTOR ROUTES
 // ─── Photo upload ───
@@ -244,42 +375,45 @@ app.get('/api/doctors/:id/availability', async (req, res) => {
   }
 });
 
-// Doctor add (admin)
+//  Doctor add — password hash 
 app.post('/api/doctors', verifyToken, upload.single('photo'), async (req, res) => {
   try {
-    console.log('req.body:', req.body);
-    console.log('req.file:', req.file);
-    
     const photoUrl = req.file 
       ? (req.file.path || req.file.secure_url || `http://localhost:5000/uploads/${req.file.filename}`)
       : null;
 
-    const doctorData = {
-      ...req.body,
-      photo: photoUrl,
-      qualifications: req.body.qualifications ? JSON.parse(req.body.qualifications) : [],
-      availability: req.body.availability ? JSON.parse(req.body.availability) : [],
+    let hashedPassword = null;
+    if (req.body.password) {
+      hashedPassword = await bcrypt.hash(req.body.password, 10);
+    }
+
+    const doctor = {
+      name: req.body.name,
+      email: req.body.email,
+      phone: req.body.phone || '',
+      photo: photoUrl || 'https://i.ibb.co/default-doctor.png',
+      specialist: req.body.specialist,
       experience: Number(req.body.experience) || 0,
-      consultationFee: Number(req.body.consultationFee) || 500,
       rating: Number(req.body.rating) || 4.5,
+      totalReviews: 0,
+      qualifications: req.body.qualifications ? JSON.parse(req.body.qualifications) : [],
+      about: req.body.about || '',
+      consultationFee: Number(req.body.consultationFee) || 500,
+      availability: req.body.availability ? JSON.parse(req.body.availability) : [],
+      password: hashedPassword,   // ← directly এখানে
+      isOnline: false,
+      isBusy: false,
+      currentCallRoom: null,
+      createdAt: new Date()
     };
 
-    console.log('doctorData:', doctorData);
-
-    const doctor = createDoctor(doctorData);
     const result = await doctorCollection.insertOne(doctor);
-
-    res.status(201).json({
-      success: true,
-      message: 'Doctor added successfully!',
-      insertedId: result.insertedId,
-      doctor: { ...doctor, _id: result.insertedId }
-    });
+    res.status(201).json({ success: true, insertedId: result.insertedId });
   } catch (error) {
-    console.error('Doctor insert error:', error); // ← এটা terminal এ দেখো
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
 app.patch('/api/doctors/:id/photo', verifyToken, upload.single('photo'), async (req, res) => {
   try {
     if (!req.file) {
@@ -328,18 +462,26 @@ app.patch('/api/appointments/:id/prescription', verifyToken, async (req, res) =>
       }
     );
 
-    res.json({ success: true, message: '✅ Prescription saved!' });
+    res.json({ success: true, message: 'Prescription saved!' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-// Doctor update
+
+// ✅UPDATED: Doctor update — password update support
 app.put('/api/doctors/:id', verifyToken, upload.single('photo'), async (req, res) => {
   try {
     const updateData = { ...req.body };
     if (req.file) updateData.photo = req.file.path;
     if (updateData.qualifications) updateData.qualifications = JSON.parse(updateData.qualifications);
     if (updateData.availability)   updateData.availability   = JSON.parse(updateData.availability);
+
+    // ✅ Password update
+    if (updateData.password && updateData.password.length >= 6) {
+      updateData.password = await bcrypt.hash(updateData.password, 10);
+    } else {
+      delete updateData.password;
+    }
 
     await doctorCollection.updateOne(
       { _id: new ObjectId(req.params.id) },
@@ -362,7 +504,6 @@ app.delete('/api/doctors/:id', verifyToken, async (req, res) => {
 });
 
 //admin stats from Dashboard
-
 app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const [
@@ -392,9 +533,9 @@ app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
       bookedAt: { $gte: startOfMonth }
     });
 
-    // Revenue
+    // ✅ UPDATED: Revenue — paymentStatus: 'paid' + $toDouble fix
     const revenueData = await appointmentCollection.aggregate([
-      { $match: { status: 'Completed' } },
+      { $match: { paymentStatus: 'paid' } },
       {
         $lookup: {
           from: 'doctors',
@@ -407,7 +548,7 @@ app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
       {
         $group: {
           _id: null,
-          totalRevenue: { $sum: '$doctorInfo.consultationFee' }
+          totalRevenue: { $sum: { $toDouble: '$doctorInfo.consultationFee' } }
         }
       }
     ]).toArray();
@@ -428,7 +569,6 @@ app.get('/api/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
       { $limit: 5 },
     ]).toArray();
 
-    // Fetch doctor names
     const topDoctors = await Promise.all(
       topDoctorsRaw.map(async (d) => {
         try {
@@ -587,7 +727,6 @@ app.get('/api/admin/patients', verifyToken, verifyAdmin, async (req, res) => {
       .limit(Number(limit))
       .toArray();
 
-    
     const withCount = await Promise.all(
       patients.map(async (p) => {
         const appointmentCount = await appointmentCollection.countDocuments({
@@ -644,9 +783,25 @@ app.get('/api/make-admin/:email', async (req, res) => {
   }
 });
 
+//  NEW: Admin doctor password set/reset
+app.patch('/api/admin/doctors/:id/password', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || password.length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
+    const hashed = await bcrypt.hash(password, 10);
+    await doctorCollection.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { password: hashed, updatedAt: new Date() } }
+    );
+    res.json({ success: true, message: 'Doctor password set successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // APPOINTMENT ROUTES
-
 
 // Appointment book (only for authenticated users)
 app.post('/api/appointments', verifyToken, async (req, res) => {
@@ -735,6 +890,94 @@ app.patch('/api/appointments/:id/cancel', verifyToken, async (req, res) => {
       { $set: { status: 'Cancelled' } }
     );
     res.json({ success: true, message: 'Appointment cancelled successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Create Payment Intent
+app.post('/api/payment/create-intent', verifyToken, async (req, res) => {
+  try {
+    const { doctorId, amount } = req.body;
+
+    if (!amount || amount < 1) {
+      return res.status(400).json({ success: false, message: 'Invalid amount' });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount * 100), // cents
+      currency: 'usd',
+      metadata: {
+        doctorId,
+        patientEmail: req.decoded.email,
+      },
+    });
+
+    res.json({
+      success: true,
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Confirm payment + save appointment
+app.post('/api/payment/confirm', verifyToken, async (req, res) => {
+  try {
+    const { paymentIntentId, appointmentData } = req.body;
+
+    // Verify payment with Stripe
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({ success: false, message: 'Payment not completed' });
+    }
+
+    // Check slot not already booked
+    const existing = await appointmentCollection.findOne({
+      doctorId: appointmentData.doctorId,
+      appointmentDate: new Date(appointmentData.appointmentDate),
+      appointmentTime: appointmentData.appointmentTime,
+      status: { $in: ['Pending', 'Confirmed'] }
+    });
+
+    if (existing) {
+      // Refund if slot taken
+      await stripe.refunds.create({ payment_intent: paymentIntentId });
+      return res.status(400).json({
+        success: false,
+        message: 'Slot already booked. Payment refunded.'
+      });
+    }
+
+    const { v4: uuidv4 } = require('uuid');
+    const callRoomId = `room-${uuidv4()}`;
+
+    const { createAppointment } = require('./appointment.model');
+    const appointment = createAppointment(
+      { ...appointmentData, paymentIntentId, paymentStatus: 'paid' },
+      req.decoded.email,
+      callRoomId
+    );
+
+    const result = await appointmentCollection.insertOne(appointment);
+
+    const doctor = await doctorCollection.findOne(
+      { _id: new ObjectId(appointmentData.doctorId) },
+      { projection: { name: 1, specialist: 1, photo: 1 } }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Payment successful! Appointment booked.',
+      appointment: {
+        ...appointment,
+        _id: result.insertedId,
+        doctor,
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
