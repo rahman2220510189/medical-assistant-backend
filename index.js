@@ -400,7 +400,7 @@ app.post('/api/doctors', verifyToken, upload.single('photo'), async (req, res) =
       about: req.body.about || '',
       consultationFee: Number(req.body.consultationFee) || 500,
       availability: req.body.availability ? JSON.parse(req.body.availability) : [],
-      password: hashedPassword,   // ← directly এখানে
+      password: hashedPassword,  
       isOnline: false,
       isBusy: false,
       currentCallRoom: null,
