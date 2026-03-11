@@ -1155,6 +1155,16 @@ app.post("/api/contact", async (req, res) => {
   }
 });
 
+
+const https = require('https');
+
+setInterval(() => {
+  https.get('https://medical-assistant-backend-og0t.onrender.com', (res) => {
+    console.log(`Self ping: ${res.statusCode}`);
+  }).on('error', (err) => {
+    console.log(`Ping error: ${err.message}`);
+  });
+}, 840000);
 // ERROR HANDLERS
 
 
