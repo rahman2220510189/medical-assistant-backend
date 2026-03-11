@@ -24,7 +24,7 @@ const PORT = process.env.PORT || 5000;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // ─── FastAPI URL ───
-const MEDICAL_API_URL = process.env.MEDICAL_API_URL || 'https://predeterminate-falsely-annabel.ngrok-free.dev';
+const MEDICAL_API_URL = process.env.MEDICAL_API_URL || "https://naymour1894-medical-assistant-ml.hf.space"
 
 // ─── Socket.io ───
 const io = new Server(server, {
