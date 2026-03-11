@@ -1110,6 +1110,10 @@ io.on('connection', (socket) => {
   socket.on('offer',         ({ roomId, offer })     => socket.to(roomId).emit('offer', { offer }));
   socket.on('answer',        ({ roomId, answer })    => socket.to(roomId).emit('answer', { answer }));
   socket.on('ice-candidate', ({ roomId, candidate }) => socket.to(roomId).emit('ice-candidate', { candidate }));
+ 
+  socket.on("call-started", ({ roomId, doctorName }) => {
+  socket.to(roomId).emit("incoming-call", { doctorName });
+});
 
   socket.on('doctor-busy', async ({ doctorId, roomId }) => {
     await doctorCollection?.updateOne(
