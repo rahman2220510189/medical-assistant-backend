@@ -233,17 +233,33 @@ app.get('/api/doctor/appointments', verifyToken, verifyDoctor, async (req, res) 
   try {
     const { status, date } = req.query;
     const doctor = req.doctor;
-    const query = { doctorId: doctor._id.toString() };
-    if (status) query.status = status;
-    if (date) {
-      const start = new Date(date); start.setHours(0,0,0,0);
-      const end   = new Date(date); end.setHours(23,59,59,999);
-      query.appointmentDate = { $gte: start, $lte: end };
+    const doctorIdStr = doctor._id.toString();
+
+    const query = {
+      $or: [
+        { doctorId: doctorIdStr },
+        { doctorId: new ObjectId(doctorIdStr) }
+      ]
+    };
+
+    if (status) {
+      query.$or = query.$or.map(q => ({ ...q, status }));
     }
+
+    if (date) {
+      const start = new Date(date); start.setHours(0, 0, 0, 0);
+      const end   = new Date(date); end.setHours(23, 59, 59, 999);
+      query.$or = query.$or.map(q => ({
+        ...q,
+        appointmentDate: { $gte: start, $lte: end }
+      }));
+    }
+
     const appointments = await appointmentCollection
       .find(query)
       .sort({ appointmentDate: 1, appointmentTime: 1 })
       .toArray();
+
     res.json({ success: true, appointments });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
