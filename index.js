@@ -269,23 +269,34 @@ app.get('/api/doctor/appointments', verifyToken, verifyDoctor, async (req, res) 
 app.get('/api/doctor/stats', verifyToken, verifyDoctor, async (req, res) => {
   try {
     const doctor = req.doctor;
-    const doctorId = doctor._id.toString();
-    const today = new Date(); today.setHours(0,0,0,0);
-    const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+    const doctorIdStr = doctor._id.toString();
+
+    
+    const idFilter = {
+      $or: [
+        { doctorId: doctorIdStr },
+        { doctorId: new ObjectId(doctorIdStr) }
+      ]
+    };
+
+    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+
     const [total, todayCount, completed, pending, paidCount] = await Promise.all([
-      appointmentCollection.countDocuments({ doctorId }),
-      appointmentCollection.countDocuments({ doctorId, appointmentDate: { $gte: today, $lte: todayEnd } }),
-      appointmentCollection.countDocuments({ doctorId, status: 'Completed' }),
-      appointmentCollection.countDocuments({ doctorId, status: { $in: ['Pending','Confirmed'] } }),
-      appointmentCollection.countDocuments({ doctorId, paymentStatus: 'paid' }),
+      appointmentCollection.countDocuments({ ...idFilter }),
+      appointmentCollection.countDocuments({ ...idFilter, appointmentDate: { $gte: today, $lte: todayEnd } }),
+      appointmentCollection.countDocuments({ ...idFilter, status: 'Completed' }),
+      appointmentCollection.countDocuments({ ...idFilter, status: { $in: ['Pending', 'Confirmed'] } }),
+      appointmentCollection.countDocuments({ ...idFilter, paymentStatus: 'paid' }),
     ]);
+
     res.json({
       success: true,
       stats: {
-        totalAppointments: total,
-        todayAppointments: todayCount,
+        totalAppointments:    total,
+        todayAppointments:    todayCount,
         completedAppointments: completed,
-        pendingAppointments: pending,
+        pendingAppointments:  pending,
         totalEarnings: paidCount * (Number(doctor.consultationFee) || 0),
       }
     });
