@@ -1026,13 +1026,8 @@ app.post('/api/payment/confirm', verifyToken, async (req, res) => {
 // MEDICAL AI ROUTES
 
 
-app.get('/api/health', async (req, res) => {
-  try {
-    const response = await apiClient.get('/health');
-    res.json({ success: true, data: response.data });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'FastAPI health check failed', error: error.message });
-  }
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Server is running' });
 });
 
 app.get('/api/symptoms', async (req, res) => {
