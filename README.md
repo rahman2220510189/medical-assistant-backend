@@ -9,7 +9,7 @@
 ## 🚀 Live API
 
 ```
-https://medical-assistant-backend-og0t.onrender.com
+https://medical-assistant-backend-1.onrender.com
 ```
 
 Health check: `GET /api/health`
